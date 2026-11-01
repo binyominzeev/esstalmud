@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { PointerEvent } from "react";
 import type { Tractate } from "@/lib/tractates";
 import { sefariaRef, type Segment } from "@/lib/talmud";
 import QuestionMap from "./QuestionMap";
@@ -20,8 +21,19 @@ interface Props {
 export default function DafView({ tractate, daf, prev, next, allDafim, segments, error, initialSegment }: Props) {
   const [active, setActive] = useState<number | null>(initialSegment);
   const [panelOpen, setPanelOpen] = useState(initialSegment !== null);
+  const [panelExpanded, setPanelExpanded] = useState(false);
+  const [panelDragging, setPanelDragging] = useState(false);
   const [aiDone, setAiDone] = useState<Set<string>>(new Set());
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const panelRef = useRef<HTMLElement>(null);
+  const panelDragRef = useRef<{
+    pointerId: number;
+    startY: number;
+    startHeight: number;
+    wasExpanded: boolean;
+    moved: boolean;
+  } | null>(null);
+  const suppressHandleClickRef = useRef(false);
   const base = `/${tractate.slug}`;
 
   useEffect(() => {
@@ -53,6 +65,68 @@ export default function DafView({ tractate, daf, prev, next, allDafim, segments,
 
   function closePanel() {
     setPanelOpen(false);
+    setPanelExpanded(false);
+    if (panelRef.current) panelRef.current.style.height = "";
+  }
+
+  function startPanelDrag(e: PointerEvent<HTMLButtonElement>) {
+    if (!e.isPrimary || e.button !== 0 || !panelRef.current) return;
+
+    const panel = panelRef.current;
+    panelDragRef.current = {
+      pointerId: e.pointerId,
+      startY: e.clientY,
+      startHeight: panel.getBoundingClientRect().height,
+      wasExpanded: panelExpanded,
+      moved: false,
+    };
+    panel.style.height = `${panel.getBoundingClientRect().height}px`;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setPanelDragging(true);
+  }
+
+  function movePanelDrag(e: PointerEvent<HTMLButtonElement>) {
+    const drag = panelDragRef.current;
+    if (!drag || drag.pointerId !== e.pointerId || !panelRef.current) return;
+
+    const delta = drag.startY - e.clientY;
+    if (Math.abs(delta) > 8) drag.moved = true;
+    if (!drag.moved) return;
+
+    const maxHeight = window.innerHeight * 0.9;
+    panelRef.current.style.height = `${Math.min(maxHeight, Math.max(120, drag.startHeight + delta))}px`;
+  }
+
+  function endPanelDrag(e: PointerEvent<HTMLButtonElement>) {
+    const drag = panelDragRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+
+    panelDragRef.current = null;
+    setPanelDragging(false);
+    if (panelRef.current) panelRef.current.style.height = "";
+
+    if (!drag.moved) return;
+
+    suppressHandleClickRef.current = true;
+    window.setTimeout(() => {
+      suppressHandleClickRef.current = false;
+    }, 0);
+
+    const delta = drag.startY - e.clientY;
+    if (delta > 40) {
+      setPanelExpanded(true);
+    } else if (delta < -40 && drag.wasExpanded) {
+      setPanelExpanded(false);
+    } else if (delta < -40) {
+      closePanel();
+    }
+  }
+
+  function cancelPanelDrag(e: PointerEvent<HTMLButtonElement>) {
+    if (panelDragRef.current?.pointerId !== e.pointerId) return;
+    panelDragRef.current = null;
+    setPanelDragging(false);
+    if (panelRef.current) panelRef.current.style.height = "";
   }
 
   return (
@@ -125,8 +199,23 @@ export default function DafView({ tractate, daf, prev, next, allDafim, segments,
         )}
       </main>
 
-      <aside className={`commentary-container${panelOpen ? " open" : ""}`}>
-        <button type="button" className="panel-close" onClick={closePanel} aria-label="Panel bezárása" />
+      <aside
+        ref={panelRef}
+        className={`commentary-container${panelOpen ? " open" : ""}${panelExpanded ? " resized" : ""}${panelDragging ? " dragging" : ""}`}
+      >
+        <button
+          type="button"
+          className="panel-close"
+          onClick={() => {
+            if (!suppressHandleClickRef.current) closePanel();
+          }}
+          onPointerDown={startPanelDrag}
+          onPointerMove={movePanelDrag}
+          onPointerUp={endPanelDrag}
+          onPointerCancel={cancelPanelDrag}
+          aria-label="Alsó panel méretezése vagy bezárása"
+          aria-expanded={panelExpanded}
+        />
         {active === null ? (
           <p className="panel-empty">Kattints egy szakaszra a Sefaria-hivatkozáshoz és az összefoglalóhoz.</p>
         ) : (
